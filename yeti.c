@@ -15,7 +15,7 @@
 
 /***MACROS***/
 
-// macro that is used to print the current version of thee editor
+// macro that is used to print the current version of the editor
 #define YETI_VERSION "0.0.1"
 
 // macro to check if any ctrl+key combination was used 
@@ -40,6 +40,7 @@ enum editorKey{
 // struct to store the original attributes of the terminal to help configure  the editor size
 struct editorConfig{
 	int cx, cy; // stores the position of the cursor
+	int rowoff; // keeps track of the current row to which the user has scrolled 
 	int screenrows; // stores the height of the terminal
 	int textrows; // store the no. of rows that contain the  text
 	erow* row; // a pointer in which each item holds one line of text and its length
@@ -279,12 +280,23 @@ void appBuffFree(struct append_buffer* ab){
 
 /***OUTPUT***/
 
+void editorScroll(){
+	// if the cursor is above the visible screen, the editor scrolls up to the cursor position 
+	if(state.cy < state.rowoff) state.rowoff = state.cy;
+	
+	// if the cursor is at  the bottom of the screen, the editor is scrolled to the cursor position
+	if(state.cy >= state.rowoff + state.screenrows) state.rowoff = state.cy - state.screenrows + 1;
+}
+
 // func to draw dash to the  begiinig of each row
 void editorDrawRows(struct append_buffer* ab){
 	for(int y=0; y < state.screenrows; y++){
-		// writing text if file is opened with the editor
-		if(y >= state.textrows){
-			// writing the version of the editor one-third below the top 
+		// used to display the  correct range of lines based on the scroll position
+		int filerow = y + state.rowoff;
+
+		// if file row happens to be greater than the number of text lines present then we just print the dash to the editor
+		if(filerow >= state.textrows){
+			// writing the version of the editor one-third below the top only when there is no text present in the file supplied to the editor 
 			if(state.textrows == 0 && y == state.screenrows / 3){
 				// stores the text to be printed
 				char welcome[80];
@@ -310,13 +322,13 @@ void editorDrawRows(struct append_buffer* ab){
 			}
 		} else {
 			// get the size of the text to be written to the editor
-			int len = state.row[y].size;
+			int len = state.row[filerow].size;
 
 			// if the size of the text is bigger than that of the editor, we  only show the  text that can be accomodated
 			if(len > state.screencols) len = state.screencols;
 
 			// appending the text to the append buffer that is used  to write to the screen
-			appBuffAppend(ab, state.row[y].text, len);
+			appBuffAppend(ab, state.row[filerow].text, len);
 		}
 	
 		// clear the line to the right once the dash is drawn
@@ -332,6 +344,9 @@ void editorDrawRows(struct append_buffer* ab){
 
 // func to clear the screen
 void editorRefreshScreen(){
+	// func to handle vertical scrolling
+	editorScroll();
+
 	// initialize an empty append buffer
 	struct append_buffer ab = APPENDBUF_INIT;
 
@@ -348,7 +363,7 @@ void editorRefreshScreen(){
 	char buffer[32];
 
 	// store the position of the cursor in the required format
-	snprintf(buffer, sizeof(buffer), "\x1b[%d;%dH", state.cy + 1, state.cx + 1);
+	snprintf(buffer, sizeof(buffer), "\x1b[%d;%dH", (state.cy - state.rowoff) + 1, state.cx + 1);
 
 	// store the position to in the buffer
 	appBuffAppend(&ab, buffer, strlen(buffer));
@@ -380,7 +395,7 @@ void editorMoveCursor(int key){
 			if(state.cy != 0) state.cy--;
 			break;
 		case ARROW_DOWN:
-			if(state.cy != state.screenrows-1) state.cy++;
+			if(state.cy != state.textrows) state.cy++;
 			break;
 
 	}
@@ -419,6 +434,9 @@ void initEditor(){
 
 	// initial text
 	state.row = NULL;
+
+	// intial text scrolled to
+	state.rowoff = 0;
 
 	// sets the screen size of the editor
 	if(getWindowSize(&state.screenrows,  &state.screencols) == -1) die("getWindowSize");
