@@ -1,5 +1,8 @@
 /***IMPORTS***/
 
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
 #include <sys/types.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -38,8 +41,8 @@ enum editorKey{
 struct editorConfig{
 	int cx, cy; // stores the position of the cursor
 	int screenrows; // stores the height of the terminal
-	int numrows; // store the no. of rows that contain the  text
-	erow row; // struct that holds thee actual text typed and its len
+	int textrows; // store the no. of rows that contain the  text
+	erow* row; // a pointer in which each item holds one line of text and its length
 	int screencols; // stores the width of the terminal
 	struct termios orig; // stores the attributes of the original terminal
 };
@@ -189,8 +192,34 @@ int getWindowSize(int* rows, int* cols){
 	}
 }
 
+/***ROW OPERATIONS***/
+
+void editorAppendRow(char *s, size_t len){
+	// reallocate space to store the new line of text being read
+	state.row = realloc(state.row, sizeof(erow) * (state.textrows + 1));
+	
+	// get the position in the array to where the  new text will be inserted 
+	int at = state.textrows;
+
+	// set the length of the text typed to the state
+	state.row[at].size = len;
+
+	// allocate enough space to the pointer that is going to hold the text
+	state.row[at].text = malloc(len + 1);
+
+	// copy the text from the file to the state to display
+	memcpy(state.row[at].text, s, len);
+
+	// null end the text to make it a string
+	state.row[at].text[len] = '\0';
+
+	// update the no. of rows that contain text in the state
+	state.textrows++;
+}
+
 /***FILE  I/O***/
 
+// func to read the file passed to be read into the editor
 void editorOpen(char *filename){
 	// opening file to read contents
 	FILE *fp = fopen(filename, "r");
@@ -198,26 +227,20 @@ void editorOpen(char *filename){
 	// if the  file could not be opened throw an error
 	if(!fp) die("fopen");
 	
+	// stores the line read from the file
 	char *line = NULL;
+
+	// used to store the memory allocated to the store the line
 	size_t linecap = 0;
+
+	// store the length of the line read
 	ssize_t linelen;
-	linelen = getline(&line, &linecap, fp);
-	if(linelen != -1){
+
+	// if there is text in that line
+	while((linelen = getline(&line, &linecap, fp)) != -1){
+		// removes the newline character since our struct erow anyways points to a single line always
 		while(linelen > 0  && (line[linelen-1] == '\n' || line[linelen-1] == '\r')) linelen--;
-		// set the length of the text typed to the  state
-		state.row.size = linelen;
-
-		// allocate enough space to the pointer that is going to hold the text
-		state.row.text = malloc(linelen + 1);
-
-		// copy the text from the file to the state to display
-		memcpy(state.row.text, line, linelen);
-
-		// null end the text to make it a string
-		state.row.text[linelen] = '\0';
-
-		// update the no. of rows that contain text in the state
-		state.numrows = 1;
+		editorAppendRow(line , linelen);	
 	}
 	free(line);
 	fclose(fp);
@@ -253,15 +276,16 @@ void appBuffAppend(struct append_buffer* ab, const char* s, int len){
 void appBuffFree(struct append_buffer* ab){
 	free(ab->b);
 }
+
 /***OUTPUT***/
 
 // func to draw dash to the  begiinig of each row
 void editorDrawRows(struct append_buffer* ab){
 	for(int y=0; y < state.screenrows; y++){
 		// writing text if file is opened with the editor
-		if(y >= state.numrows){
+		if(y >= state.textrows){
 			// writing the version of the editor one-third below the top 
-			if(y == state.screenrows / 3){
+			if(state.textrows == 0 && y == state.screenrows / 3){
 				// stores the text to be printed
 				char welcome[80];
 			
@@ -286,13 +310,13 @@ void editorDrawRows(struct append_buffer* ab){
 			}
 		} else {
 			// get the size of the text to be written to the editor
-			int len = state.row.size;
+			int len = state.row[y].size;
 
 			// if the size of the text is bigger than that of the editor, we  only show the  text that can be accomodated
 			if(len > state.screencols) len = state.screencols;
 
 			// appending the text to the append buffer that is used  to write to the screen
-			appBuffAppend(ab, state.row.text, len);
+			appBuffAppend(ab, state.row[y].text, len);
 		}
 	
 		// clear the line to the right once the dash is drawn
@@ -390,14 +414,17 @@ void initEditor(){
 	state.cx = 0;
 	state.cy = 0;
 	
-	// initial the  no of rows  containing text
-	state.numrows = 0;
+	// initial no of rows containing text
+	state.textrows = 0;
+
+	// initial text
+	state.row = NULL;
 
 	// sets the screen size of the editor
 	if(getWindowSize(&state.screenrows,  &state.screencols) == -1) die("getWindowSize");
 }
 
-int main(){
+int main(int argc, char *argv[]){
 	// start the raw mode
 	enableRawMode();
 	
@@ -405,7 +432,7 @@ int main(){
 	initEditor();
 	
 	// read text from the file if supplied else open an empty editor
-	if(argc >= 2) editorOpen();
+	if(argc >= 2) editorOpen(argv[1]);
 
 	// loop to continuosly capture keystrokes
 	while (1){
