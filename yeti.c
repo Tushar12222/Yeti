@@ -21,12 +21,17 @@
 // macro to check if any ctrl+key combination was used 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
+// defines one tab space
+#define YETI_TAB_STOP 8
+
 /***DATA***/
 
 // struct to  store the text typed
-typedef struct editoRow{
-	int size;
-	char* text;
+typedef struct editorRow{
+	int size; // stores the length of the text
+	int rsize; // stores the size of the actual text to be rendered
+	char* text; // holds a line of text
+	char* render; // contains the actual text to be rendered
 } erow;
 
 // enum to represent the arrow keys
@@ -39,8 +44,11 @@ enum editorKey{
 
 // struct to store the original attributes of the terminal to help configure  the editor size
 struct editorConfig{
+	char* filename; // stores the filename of the current file open in the editor
 	int cx, cy; // stores the position of the cursor
-	int rowoff; // keeps track of the current row to which the user has scrolled 
+	int rx; // holds cursor coordinate for the actual render
+	int rowoff; // keeps track of the topmost row present on the current visible window
+	int coloff; // keeps track of the leftmost column present on the current visible window
 	int screenrows; // stores the height of the terminal
 	int textrows; // store the no. of rows that contain the  text
 	erow* row; // a pointer in which each item holds one line of text and its length
@@ -195,6 +203,39 @@ int getWindowSize(int* rows, int* cols){
 
 /***ROW OPERATIONS***/
 
+// func converst the cx to rx based on the tab spaces present in the line
+int editorRowCxToRx(erow* row, int cx){
+	int rx = 0;
+	for(int j = 0; j < cx; j++){
+		if(row->text[j] == '\t') rx += (YETI_TAB_STOP - 1) - (rx % YETI_TAB_STOP);
+		rx++;
+	}
+
+	return rx;
+}
+
+// func that converts tabs to spaces
+void editorUpdateRow(erow* row){
+	int tabs = 0;
+	for(int j = 0; j < row->size; j++){
+		if(row->text[j] == '\t') tabs++;
+	}
+	free(row->render);
+	row->render = malloc(row->size + tabs*(YETI_TAB_STOP-1) + 1);
+
+	int idx = 0;
+	for(int j = 0; j < row->size; j++){
+		if(row->text[j] == '\t'){
+			row->render[idx++] = ' ';
+			while(idx % YETI_TAB_STOP != 0) row->render[idx++] = ' ';
+		} else {
+			row->render[idx++] = row->text[j];
+		}
+	}
+	row->render[idx] = '\0';
+	row->rsize = idx;
+}
+
 void editorAppendRow(char *s, size_t len){
 	// reallocate space to store the new line of text being read
 	state.row = realloc(state.row, sizeof(erow) * (state.textrows + 1));
@@ -214,6 +255,14 @@ void editorAppendRow(char *s, size_t len){
 	// null end the text to make it a string
 	state.row[at].text[len] = '\0';
 
+	// actual text to be rendered
+	state.row[at].render = NULL;
+
+	// size of the actual text to be rendered
+	state.row[at].rsize = 0;
+	
+	editorUpdateRow(&state.row[at]);
+
 	// update the no. of rows that contain text in the state
 	state.textrows++;
 }
@@ -222,6 +271,12 @@ void editorAppendRow(char *s, size_t len){
 
 // func to read the file passed to be read into the editor
 void editorOpen(char *filename){
+	// clear previous filename held
+	free(state.filename);
+
+	// automatically allocates and stores the filename
+	state.filename = strdup(filename);
+
 	// opening file to read contents
 	FILE *fp = fopen(filename, "r");
 	
@@ -280,12 +335,23 @@ void appBuffFree(struct append_buffer* ab){
 
 /***OUTPUT***/
 
+// handles scrolling 
 void editorScroll(){
+
+	state.rx = 0;
+
+	// as long as the cursor is on a text line, call the convert function
+	if(state.cy < state.textrows) state.rx = editorRowCxToRx(&state.row[state.cy], state.cx);
+
 	// if the cursor is above the visible screen, the editor scrolls up to the cursor position 
 	if(state.cy < state.rowoff) state.rowoff = state.cy;
 	
-	// if the cursor is at  the bottom of the screen, the editor is scrolled to the cursor position
-	if(state.cy >= state.rowoff + state.screenrows) state.rowoff = state.cy - state.screenrows + 1;
+	// if the cursor is at the bottom of the screen, the editor is scrolled down depending on the difference between cy and screenrows and we add once since the y in editorDraw loop starts off with 0
+	if(state.cy >= state.rowoff + state.screenrows) state.rowoff = (state.cy - state.screenrows) + 1;
+	
+	// same thing as above but for the horizontal scrolling
+	if(state.rx < state.coloff) state.coloff = state.rx;
+	if(state.rx >= state.coloff + state.screencols) state.coloff = (state.rx - state.screencols) + 1;
 }
 
 // func to draw dash to the  begiinig of each row
@@ -322,24 +388,50 @@ void editorDrawRows(struct append_buffer* ab){
 			}
 		} else {
 			// get the size of the text to be written to the editor
-			int len = state.row[filerow].size;
+			int len = state.row[filerow].rsize - state.coloff;
+			
+			// if there is no text, then we do not write anything to the screen
+			if(len < 0) len = 0;
 
 			// if the size of the text is bigger than that of the editor, we  only show the  text that can be accomodated
 			if(len > state.screencols) len = state.screencols;
 
-			// appending the text to the append buffer that is used  to write to the screen
-			appBuffAppend(ab, state.row[filerow].text, len);
+			// appending the text to the append buffer that is used to write to the screen
+			appBuffAppend(ab, &state.row[filerow].render[state.coloff], len);
 		}
 	
 		// clear the line to the right once the dash is drawn
 		appBuffAppend(ab, "\x1b[K" , 3);
 		
-		// this avoids an empty last line without a dash
-		if(y < state.screenrows-1){
-			// append to the buffer the newline characters
-			appBuffAppend(ab, "\r\n", 2);
+		// append to the buffer the newline characters
+		appBuffAppend(ab, "\r\n", 2);
+	}
+}
+
+// func to draw the status bar
+void editorDrawStatusBar(struct append_buffer* ab){
+	// this tells the terminal to invert the colors attribute to the text written after this call
+	appBuffAppend(ab, "\x1b[7m",  4);
+
+	// state buffer to store the filename if it exists and rstatus to show the current cursor line 
+	char status[80], rstatus[80];
+	int len = snprintf(status, sizeof(status), "%.20s - %d lines", state.filename ? state.filename : "[No Name]", state.textrows);
+	int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", state.cy + 1, state.textrows);
+	if(len > state.screencols) len = state.screenrows;
+	appBuffAppend(ab, status, len);
+
+	// write spaces so the entire status bar turns white
+	while(len < state.screencols){
+		// write the current cursor line to the end of the status bar
+		if(state.screencols - len == rlen){
+			appBuffAppend(ab, rstatus, rlen);
+			break;
+		} else {
+			appBuffAppend(ab, " ", 1);
+			len++;
 		}
 	}
+	appBuffAppend(ab, "\x1b[m", 3);
 }
 
 // func to clear the screen
@@ -358,12 +450,14 @@ void editorRefreshScreen(){
 
 	// call func to write dashes to the buffer
 	editorDrawRows(&ab);
+
+	editorDrawStatusBar(&ab);
 	
-	// buffer to store the initial position of the cursor
+	// buffer to store the position of the cursor in a specific format
 	char buffer[32];
 
 	// store the position of the cursor in the required format
-	snprintf(buffer, sizeof(buffer), "\x1b[%d;%dH", (state.cy - state.rowoff) + 1, state.cx + 1);
+	snprintf(buffer, sizeof(buffer), "\x1b[%d;%dH", (state.cy - state.rowoff) + 1, (state.rx - state.coloff) + 1);
 
 	// store the position to in the buffer
 	appBuffAppend(&ab, buffer, strlen(buffer));
@@ -383,13 +477,22 @@ void editorRefreshScreen(){
 
 //handles movement of cursor in the editor
 void editorMoveCursor(int key){
+	// handles horizontal movement of the cursor on a line
+	erow* curr_row = (state.cy >= state.textrows) ? NULL : &state.row[state.cy];  
+
 	// switch case to change the global state of the cursor
 	switch(key){
 		case ARROW_LEFT:
-			if(state.cx != 0) state.cx--;
+			if(state.cy != 0 && state.cx == 0){
+				state.cy--;
+				state.cx = state.row[state.cy].size-1;
+			} else if(state.cx > 0) state.cx--;
 			break;
 		case ARROW_RIGHT:
-			if(state.cx != state.screencols-1) state.cx++;
+			if(curr_row && state.cx == curr_row->size-1 && state.cy < state.textrows){
+				state.cy++;
+				state.cx = 0;
+			} else if(curr_row && state.cx != curr_row->size-1) state.cx++;
 			break;
 		case ARROW_UP:
 			if(state.cy != 0) state.cy--;
@@ -399,6 +502,10 @@ void editorMoveCursor(int key){
 			break;
 
 	}
+	
+	curr_row = state.cy < state.textrows ? &state.row[state.cy] : NULL;
+	if(curr_row && state.cx > curr_row->size-1) state.cx = curr_row->size-1;
+
 }
 
 // func to process keypress
@@ -428,6 +535,7 @@ void initEditor(){
 	// initial cursor position
 	state.cx = 0;
 	state.cy = 0;
+	state.rx = 0;
 	
 	// initial no of rows containing text
 	state.textrows = 0;
@@ -435,11 +543,17 @@ void initEditor(){
 	// initial text
 	state.row = NULL;
 
-	// intial text scrolled to
+	// intial topmost row present on the visible screen
 	state.rowoff = 0;
+
+	// initial leftmost col visible on the scrrrn
+	state.coloff = 0;
 
 	// sets the screen size of the editor
 	if(getWindowSize(&state.screenrows,  &state.screencols) == -1) die("getWindowSize");
+	
+	// leave the last line to display status bar
+	state.screenrows -= 1;
 }
 
 int main(int argc, char *argv[]){
