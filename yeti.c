@@ -3,6 +3,9 @@
 #define _DEFAULT_SOURCE
 #define _BSD_SOURCE
 #define _GNU_SOURCE
+
+
+#include <stdarg.h>
 #include <sys/types.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -12,6 +15,7 @@
 #include <termios.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <time.h>
 
 /***MACROS***/
 
@@ -34,8 +38,9 @@ typedef struct editorRow{
 	char* render; // contains the actual text to be rendered
 } erow;
 
-// enum to represent the arrow keys
+// enum to represent the non- printable keys
 enum editorKey{
+	BACKSPACE = 127,
 	ARROW_LEFT = 1000,
 	ARROW_RIGHT,
 	ARROW_UP,
@@ -53,6 +58,8 @@ struct editorConfig{
 	int textrows; // store the no. of rows that contain the  text
 	erow* row; // a pointer in which each item holds one line of text and its length
 	int screencols; // stores the width of the terminal
+	char statusmsg[80]; // stores status message
+	time_t statusmsg_time; //holds timestamp to the set status message
 	struct termios orig; // stores the attributes of the original terminal
 };
 
@@ -236,6 +243,7 @@ void editorUpdateRow(erow* row){
 	row->rsize = idx;
 }
 
+// func to append every new line read from the file to the state
 void editorAppendRow(char *s, size_t len){
 	// reallocate space to store the new line of text being read
 	state.row = realloc(state.row, sizeof(erow) * (state.textrows + 1));
@@ -265,6 +273,37 @@ void editorAppendRow(char *s, size_t len){
 
 	// update the no. of rows that contain text in the state
 	state.textrows++;
+}
+
+// func to insert characters into a line 
+void editorRowInsertChar(erow* row, int at, int c){
+	// incase the at is out of bounds
+	if(at < 0 || at > row->size) at = row->size;
+
+	// allocate memory to add the new character, +2 to account for the null char
+	row->text = realloc(row->text, row->size + 2);
+
+	// move the text in such a way that the character can be inserted in the current cursor position
+	memmove(&row->text[at+1], &row->text[at], row->size - at + 1);
+
+	// update the state
+	row->size++;
+	row->text[at] = c;
+	editorUpdateRow(row);
+}
+
+/***EDITOR OPERATIONS***/
+
+// func to insert character
+void editorInsertChar(int c){
+	// if the cursor is on the last line that is of the editor that is blank, then we convert that into a text row 
+	if(state.cy == state.textrows) editorAppendRow("", 0);
+	
+	// call to append the char to the current cursor position
+	editorRowInsertChar(&state.row[state.cy], state.cx, c);
+
+	// update the cx cursor position after appending the character
+	state.cx++;
 }
 
 /***FILE  I/O***/
@@ -432,6 +471,22 @@ void editorDrawStatusBar(struct append_buffer* ab){
 		}
 	}
 	appBuffAppend(ab, "\x1b[m", 3);
+	appBuffAppend(ab, "\r\n", 2);
+}
+
+// writes the status message to the append buffer which lateer writes it to the screen
+void editorDrawMessageBar(struct append_buffer* ab){
+	// clears the previous status message
+	appBuffAppend(ab, "\x1b[K", 3);
+	
+	// store the length of the status message
+	int msglen = strlen(state.statusmsg);
+
+	// adjust the length of the status message incase it is bigger than the editor
+	if(msglen > state.screencols) msglen = state.screencols;
+
+	// we write the status message to the screen only if it has some text and the status message was not older than 5 seconds
+	if(msglen && time(NULL) - state.statusmsg_time < 5) appBuffAppend(ab, state.statusmsg, msglen);
 }
 
 // func to clear the screen
@@ -450,8 +505,12 @@ void editorRefreshScreen(){
 
 	// call func to write dashes to the buffer
 	editorDrawRows(&ab);
-
+	
+	// call func to write the status bar to the screen
 	editorDrawStatusBar(&ab);
+
+	// call func to write the status message
+	editorDrawMessageBar(&ab);
 	
 	// buffer to store the position of the cursor in a specific format
 	char buffer[32];
@@ -472,6 +531,14 @@ void editorRefreshScreen(){
 	appBuffFree(&ab);
 }
 
+// func to set the status message
+void editorSetStatusMessage(const char *fmt, ...){
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(state.statusmsg, sizeof(state.statusmsg), fmt, ap);
+	va_end(ap);
+	state.statusmsg_time = time(NULL);
+}
 
 /***INPUT***/
 
@@ -519,11 +586,17 @@ void editorProcessKeypress(){
 			write(STDOUT_FILENO, "\x1b[H", 3);
 			exit(0);
 			break;
+
+		case BACKSPACE:
+			break;
 		case ARROW_UP:
 		case ARROW_DOWN:
 		case ARROW_LEFT:
 		case ARROW_RIGHT:
 			editorMoveCursor(c);
+			break;
+		default:
+			editorInsertChar(c);
 			break;
 	}
 }
@@ -549,11 +622,17 @@ void initEditor(){
 	// initial leftmost col visible on the scrrrn
 	state.coloff = 0;
 
+	// initially no status message
+	state.statusmsg[0] = '\0';
+	
+	// initial timestamp of set status message
+	state.statusmsg_time = 0;
+
 	// sets the screen size of the editor
 	if(getWindowSize(&state.screenrows,  &state.screencols) == -1) die("getWindowSize");
 	
-	// leave the last line to display status bar
-	state.screenrows -= 1;
+	// leave the 2 lines to display status bar and the status message
+	state.screenrows -= 2;
 }
 
 int main(int argc, char *argv[]){
@@ -565,6 +644,9 @@ int main(int argc, char *argv[]){
 	
 	// read text from the file if supplied else open an empty editor
 	if(argc >= 2) editorOpen(argv[1]);
+	
+	// sets the initial status message
+	editorSetStatusMessage("HELP: Ctrl-Q = quit");
 
 	// loop to continuosly capture keystrokes
 	while (1){
