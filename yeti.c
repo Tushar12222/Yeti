@@ -44,11 +44,17 @@ enum editorKey{
 	ARROW_LEFT = 1000,
 	ARROW_RIGHT,
 	ARROW_UP,
-	ARROW_DOWN
+	ARROW_DOWN,
+	PAGE_UP,
+	PAGE_DOWN,
+	DEL_KEY,
+	HOME_KEY,
+	END_KEY
 };
 
 // struct to store the original attributes of the terminal to help configure  the editor size
 struct editorConfig{
+	int linenooff; // tells us the size of the line no col
 	int modified; // tells us whether the text loaded and the text in the current state are same
 	char* filename; // stores the filename of the current file open in the editor
 	int cx, cy; // stores the position of the cursor
@@ -150,11 +156,33 @@ int editorReadKey(){
 		if(read(STDIN_FILENO, &seq[1], 1) != 1) return '\x1b';
 
 		if(seq[0] == '['){
+			if(seq[1] >= '0' && seq[1] <= '9'){
+				if(read(STDIN_FILENO, &seq[2], 1) != 1) return '\x1b';
+				if(seq[2] == '~'){
+					switch(seq[1]){
+						case '1': return HOME_KEY;
+						case '3': return DEL_KEY;
+						case '4': return END_KEY;
+						case '5': return PAGE_UP;
+						case '6': return PAGE_DOWN;
+						case '7': return HOME_KEY;
+						case '8': return END_KEY;
+					}
+				}
+			} else {
+				switch(seq[1]){
+					case 'A': return ARROW_UP;
+					case 'B': return ARROW_DOWN;
+					case 'C': return ARROW_RIGHT;
+					case 'D': return ARROW_LEFT;
+					case 'H': return HOME_KEY;
+					case 'F': return END_KEY;
+				}
+			}
+		} else if(seq[0] == 'O'){
 			switch(seq[1]){
-				case 'A': return ARROW_UP;
-				case 'B': return ARROW_DOWN;
-				case 'C': return ARROW_RIGHT;
-				case 'D': return ARROW_LEFT;
+				case 'H': return HOME_KEY;
+				case 'F': return END_KEY;
 			}
 		}
 
@@ -278,6 +306,9 @@ void editorAppendRow(char *s, size_t len){
 
 	// update the no. of rows that contain text in the state
 	state.textrows++;
+
+	// to show that the file was modified
+	state.modified++;
 }
 
 // func to insert characters into a line 
@@ -295,6 +326,18 @@ void editorRowInsertChar(erow* row, int at, int c){
 	row->size++;
 	row->text[at] = c;
 	editorUpdateRow(row);
+	state.modified++;
+}
+
+// func to delete a char 
+void editorRowDelChar(erow* row, int at){
+	if(at < 0 || at >= row->size) return;
+	
+	// move the text after the character into the character to remove it
+	memmove(&row->text[at], &row->text[at+1], row->size - at);
+	row->size--;
+	editorUpdateRow(row);
+	state.modified++;
 }
 
 /***EDITOR OPERATIONS***/
@@ -309,6 +352,16 @@ void editorInsertChar(int c){
 
 	// update the cx cursor position after appending the character
 	state.cx++;
+}
+
+void editorDelChar(){
+	if(state.cy == state.textrows)  return;
+
+	erow* row = &state.row[state.cy];
+	if(state.cx > 0){
+		editorRowDelChar(row, state.cx-1);
+		state.cx--;
+	}
 }
 
 /***FILE I/O***/
@@ -369,6 +422,9 @@ void editorOpen(char *filename){
 	}
 	free(line);
 	fclose(fp);
+
+	// we reset the moodified state since there was no change made while reading the file
+	state.modified = 0;
 }
 
 // func to save the string to the file 
@@ -396,6 +452,9 @@ void editorSave(){
 				// free the memory allocated for the buffer since the wrtitng is done
 				free(buffer);
 				
+				// on saving we reset modified since the file on the disk and in file editor are the same
+				state.modified = 0;
+
 				// set status meeesage
 				editorSetStatusMessage("%d bytes written to disk", len);
 				return;
@@ -504,6 +563,10 @@ void editorDrawRows(struct append_buffer* ab){
 
 			// if the size of the text is bigger than that of the editor, we  only show the  text that can be accomodated
 			if(len > state.screencols) len = state.screencols;
+			
+			char lineno[40];
+			int linelen = snprintf(lineno, sizeof(lineno), "\033[1;33m%d\033[0m ", filerow+1);
+			appBuffAppend(ab, lineno, linelen);
 
 			// appending the text to the append buffer that is used to write to the screen
 			appBuffAppend(ab, &state.row[filerow].render[state.coloff], len);
@@ -522,9 +585,12 @@ void editorDrawStatusBar(struct append_buffer* ab){
 	// this tells the terminal to invert the colors attribute to the text written after this call
 	appBuffAppend(ab, "\x1b[7m",  4);
 
-	// state buffer to store the filename if it exists and rstatus to show the current cursor line 
-	char status[80], rstatus[80];
-	int len = snprintf(status, sizeof(status), "%.20s - %d lines", state.filename ? state.filename : "[No Name]", state.textrows);
+	// state buffer to store the filename if it exists and rstatus to show the current cursor line and the modifed buffer to show the  number of lines modified 
+	char modified[30], status[80], rstatus[80];
+
+	snprintf(modified, sizeof(modified), "(%d modifications)", state.modified);
+
+	int len = snprintf(status, sizeof(status), "%.20s - %d lines %s", state.filename ? state.filename : "[No Name]", state.textrows, state.modified ? modified : "");
 	int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", state.cy + 1, state.textrows);
 	if(len > state.screencols) len = state.screenrows;
 	appBuffAppend(ab, status, len);
@@ -650,25 +716,50 @@ void editorProcessKeypress(){
 	int c = editorReadKey();
 
 	switch (c){
+		case HOME_KEY:
+		case END_KEY:
+			break;
+
+		// force quit
+		case CTRL_KEY('f'):
+			write(STDOUT_FILENO, "\x1b[2J", 4);
+			write(STDOUT_FILENO, "\x1b[H", 3);
+			exit(0);
+			break;
+		
+		// quit when changes are saved
 		case CTRL_KEY('q'):
+			if(state.modified){
+				editorSetStatusMessage("Unsaved file changes! Save and quit or use CTRL-F to force quit.");
+				return;
+			}
 			// tells the terminal to clear the screen and postion the cursor to the top-left
 			write(STDOUT_FILENO, "\x1b[2J", 4);
 			write(STDOUT_FILENO, "\x1b[H", 3);
 			exit(0);
 			break;
-
+		
+		// saves changes to the disk
 		case CTRL_KEY('s'):
 			editorSave();
 			break;
 
 		case BACKSPACE:
+		case CTRL_KEY('h'):
+		case DEL_KEY:
+			if(c == DEL_KEY) editorMoveCursor(ARROW_RIGHT);
+			editorDelChar();
 			break;
+
+		// moves the cursor
 		case ARROW_UP:
 		case ARROW_DOWN:
 		case ARROW_LEFT:
 		case ARROW_RIGHT:
 			editorMoveCursor(c);
 			break;
+		
+		// add characters 
 		default:
 			editorInsertChar(c);
 			break;
@@ -704,6 +795,9 @@ void initEditor(){
 
 	// initial modified value
 	state.modified = 0;
+	
+	// iniial lineno offset value
+	state.linenooff = 0;
 
 	// sets the screen size of the editor
 	if(getWindowSize(&state.screenrows,  &state.screencols) == -1) die("getWindowSize");
