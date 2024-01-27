@@ -4,7 +4,7 @@
 #define _BSD_SOURCE
 #define _GNU_SOURCE
 
-
+#include <fcntl.h>
 #include <stdarg.h>
 #include <sys/types.h>
 #include <string.h>
@@ -49,6 +49,7 @@ enum editorKey{
 
 // struct to store the original attributes of the terminal to help configure  the editor size
 struct editorConfig{
+	int modified; // tells us whether the text loaded and the text in the current state are same
 	char* filename; // stores the filename of the current file open in the editor
 	int cx, cy; // stores the position of the cursor
 	int rx; // holds cursor coordinate for the actual render
@@ -65,6 +66,10 @@ struct editorConfig{
 
 // state variables that holds the current state of the editor
 struct editorConfig state;
+
+/***PROTOTYPE***/
+
+void editorSetStatusMessage(const char *fmt, ...);
 
 /***TERMINAL***/
 
@@ -306,7 +311,32 @@ void editorInsertChar(int c){
 	state.cx++;
 }
 
-/***FILE  I/O***/
+/***FILE I/O***/
+
+// func converts the rows in the state to a string to be written to the file
+char* editorRowsToString(int* buflen){
+	// stores the total length of text in our state
+	int totlen = 0;
+
+	// calculate the total length and save it in buflen
+	for(int j=0; j < state.textrows; j++) totlen += state.row[j].size + 1;
+	*buflen = totlen;
+	
+	// buffer to point to the beginning of the string
+	char* buffer = malloc(totlen);
+
+	//used to help create the string
+	char* p = buffer;
+
+	// copy the text from each line and save it to the newly al;located memory and also ending each line with a newline character
+	for(int j=0; j < state.textrows; j++){
+		memcpy(p, state.row[j].text, state.row[j].size);
+		p += state.row[j].size;
+		*p = '\n';
+		p++;
+	}
+	return buffer;
+}
 
 // func to read the file passed to be read into the editor
 void editorOpen(char *filename){
@@ -339,6 +369,46 @@ void editorOpen(char *filename){
 	}
 	free(line);
 	fclose(fp);
+}
+
+// func to save the string to the file 
+void editorSave(){
+	// todo for new file
+	if(state.filename == NULL) return;
+
+	// stores the length of the string created
+	int len;
+
+	//stores the string returned from the function that is thee entire updated text
+	char* buffer = editorRowsToString(&len);
+
+	// open the file to save the changes with the appropriate permissions
+	int fd = open(state.filename, O_RDWR | O_CREAT, 0644);
+	
+	if(fd != -1){
+		// sets the file size to the specified length
+		if(ftruncate(fd, len) != -1){
+			// write the new text to the file
+			if(write(fd, buffer, len) == len){
+				// close the file
+				close(fd);
+
+				// free the memory allocated for the buffer since the wrtitng is done
+				free(buffer);
+				
+				// set status meeesage
+				editorSetStatusMessage("%d bytes written to disk", len);
+				return;
+			}
+		}
+
+		close(fd);
+	}
+
+	free(buffer);
+	
+	// set status message
+	editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
 }
 
 /***APPEND BUFFER***/
@@ -587,6 +657,10 @@ void editorProcessKeypress(){
 			exit(0);
 			break;
 
+		case CTRL_KEY('s'):
+			editorSave();
+			break;
+
 		case BACKSPACE:
 			break;
 		case ARROW_UP:
@@ -628,6 +702,9 @@ void initEditor(){
 	// initial timestamp of set status message
 	state.statusmsg_time = 0;
 
+	// initial modified value
+	state.modified = 0;
+
 	// sets the screen size of the editor
 	if(getWindowSize(&state.screenrows,  &state.screencols) == -1) die("getWindowSize");
 	
@@ -646,7 +723,7 @@ int main(int argc, char *argv[]){
 	if(argc >= 2) editorOpen(argv[1]);
 	
 	// sets the initial status message
-	editorSetStatusMessage("HELP: Ctrl-Q = quit");
+	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit");
 
 	// loop to continuosly capture keystrokes
 	while (1){
