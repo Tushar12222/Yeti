@@ -323,6 +323,22 @@ void editorAppendRow(char *s, size_t len){
 	state.modified++;
 }
 
+// func to free the passed line
+void editorFreeRow(erow* row){
+	free(row->render);
+	free(row->text);
+}
+
+// func to func to shift the text to replace the line 
+void editorDelRow(int at){
+	if(at < 0 || at >= state.textrows) return;
+
+	editorFreeRow(&state.row[at]);
+	memmove(&state.row[at], &state.row[at + 1], sizeof(erow) * (state.textrows - at -1));
+	state.textrows--;
+	state.modified++;
+}
+
 // func to insert characters into a line 
 void editorRowInsertChar(erow* row, int at, int c){
 
@@ -342,9 +358,24 @@ void editorRowInsertChar(erow* row, int at, int c){
 	state.modified++;
 }
 
+// func to append the line when the use hitss backspace to the previous line ending
+void editorRowAppendString(erow* row, char *s, size_t len){
+	//reallocate extra memory to the line to accomodate the next line which was backspaced
+	row->text = realloc(row->text, row->size + len + 1);
+
+	// move the text from the next line memory addresss to the previous line memory address
+	memcpy(&row->text[row->size], s, len);
+
+	// update state 
+	row->size += len;
+	row->text[row->size] = '\0';
+	editorUpdateRow(row);
+	state.modified++;
+}
+
 // func to delete a char 
 void editorRowDelChar(erow* row, int at){
-	if(at < 0 || at >= row->size) return;
+	//if(at < 0 || at >= row->size) return;
 	
 	// move the text after the character into the character to remove it
 	memmove(&row->text[at], &row->text[at+1], row->size - at);
@@ -367,15 +398,26 @@ void editorInsertChar(int c){
 	state.cx++;
 }
 
+// func to delete char
 void editorDelChar(){
 	if(state.cy == state.textrows)  return;
+	if(state.cx == state.linenooff && state.cy == 0) return;
 
 	erow* row = &state.row[state.cy];
-	if(state.cx > 0){
+	// remove a character idf the cursur is not in the beginning of the line
+	if(state.cx > state.linenooff){
 		editorRowDelChar(row, state.cx-state.linenooff-1);
 		state.cx--;
-	}
+	
+	// remove the current line and append it to the previous line if the cursor is in the beginning of the line
+	} //else {
+	//	state.cx = state.row[state.cy - 1].size + state.linenooff;
+	//	editorRowAppendString(&state.row[state.cy-1], row->text, row->size);
+	//	editorDelRow(state.cy);
+	//	state.cy--;
+	//}
 }
+
 
 /***FILE I/O***/
 
@@ -531,7 +573,9 @@ void editorScroll(){
 	if(state.cy >= state.rowoff + state.screenrows) state.rowoff = (state.cy - state.screenrows) + 1;
 	
 	// same thing as above but for the horizontal scrolling
-	if(state.rx < state.coloff) state.coloff = state.rx;
+	if(state.rx < state.coloff + state.linenooff) {
+		state.coloff = state.rx - state.linenooff;
+	}
 	if(state.rx >= state.coloff + state.screencols) state.coloff = (state.rx - state.screencols) + 1;
 }
 
@@ -544,7 +588,7 @@ void editorDrawRows(struct append_buffer* ab){
 		// if file row happens to be greater than the number of text lines present then we just print the dash to the editor
 		if(filerow >= state.textrows){
 			// writing the version of the editor one-third below the top only when there is no text present in the file supplied to the editor 
-			if(state.textrows == 0 && y == state.screenrows / 3){
+			if(state.row[0].size == 0 && y == state.screenrows / 3){
 				// stores the text to be printed
 				char welcome[80];
 			
@@ -574,9 +618,6 @@ void editorDrawRows(struct append_buffer* ab){
 			// if there is no text, then we do not write anything to the screen
 			if(len < 0) len = 0;
 
-			// if the size of the text is bigger than that of the editor, we  only show the  text that can be accomodated
-			if(len > state.screencols) len = state.screencols;
-			
 			// buffer to print the line no
 			char lineno[80];
 
@@ -592,6 +633,8 @@ void editorDrawRows(struct append_buffer* ab){
 			// save the width taken by the line no col to state
 			state.linenooff = maxLen + 1;
 
+			// if the size of the text is bigger than that of the editor, we  only show the  text that can be accomodated
+			if(len + state.linenooff > state.screencols) len = state.screencols - state.linenooff;
 			// holds the padding required for the line nos to line up properly
 			char* spacebuf = malloc(sizeof(char)*(diff + 1));
 			char* temp = spacebuf;
@@ -793,10 +836,10 @@ void editorProcessKeypress(){
 		// delete a character
 		case BACKSPACE:
 		case CTRL_KEY('h'):
-			if(state.cx > state.linenooff) editorDelChar();
+			editorDelChar();
 			break;
 		case DEL_KEY:
-			if(c == DEL_KEY) editorMoveCursor(ARROW_RIGHT);
+			editorMoveCursor(ARROW_RIGHT);
 			editorDelChar();
 			break;
 
@@ -808,6 +851,10 @@ void editorProcessKeypress(){
 			editorMoveCursor(c);
 			break;
 		
+		case CTRL_KEY('l'):
+		case '\x1b':
+			break;
+
 		// add characters 
 		default:
 			editorInsertChar(c);
