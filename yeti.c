@@ -73,6 +73,18 @@ struct editorConfig{
 // state variables that holds the current state of the editor
 struct editorConfig state;
 
+/***UTILS***/
+
+// func to decide line no col width
+int calculateDigits(int num){
+	int len = 0;
+	while(num){
+		num /= 10;
+		len ++;
+	}
+	return len;
+}
+
 /***PROTOTYPE***/
 
 void editorSetStatusMessage(const char *fmt, ...);
@@ -313,8 +325,9 @@ void editorAppendRow(char *s, size_t len){
 
 // func to insert characters into a line 
 void editorRowInsertChar(erow* row, int at, int c){
+
 	// incase the at is out of bounds
-	if(at < 0 || at > row->size) at = row->size;
+	//if(at < state.linenooff || at > row->size) at = row->size - state.linenooff;
 
 	// allocate memory to add the new character, +2 to account for the null char
 	row->text = realloc(row->text, row->size + 2);
@@ -347,8 +360,10 @@ void editorInsertChar(int c){
 	// if the cursor is on the last line that is of the editor that is blank, then we convert that into a text row 
 	if(state.cy == state.textrows) editorAppendRow("", 0);
 	
+	editorSetStatusMessage("passed cx: %d", state.cx-state.linenooff);
+
 	// call to append the char to the current cursor position
-	editorRowInsertChar(&state.row[state.cy], state.cx, c);
+	editorRowInsertChar(&state.row[state.cy], state.cx-state.linenooff, c);
 
 	// update the cx cursor position after appending the character
 	state.cx++;
@@ -359,7 +374,7 @@ void editorDelChar(){
 
 	erow* row = &state.row[state.cy];
 	if(state.cx > 0){
-		editorRowDelChar(row, state.cx-1);
+		editorRowDelChar(row, state.cx-state.linenooff-1);
 		state.cx--;
 	}
 }
@@ -564,9 +579,37 @@ void editorDrawRows(struct append_buffer* ab){
 			// if the size of the text is bigger than that of the editor, we  only show the  text that can be accomodated
 			if(len > state.screencols) len = state.screencols;
 			
-			char lineno[40];
-			int linelen = snprintf(lineno, sizeof(lineno), "\033[1;33m%d\033[0m ", filerow+1);
+			// buffer to print the line no
+			char lineno[80];
+
+			// holds th length of the current line no
+			int filerowLen = calculateDigits(filerow+1);
+
+			// holds the length of the max line no for the current file
+			int maxLen = calculateDigits(state.textrows);
+
+			// holds the diff in lengths
+			int diff = maxLen - filerowLen;
+
+			// save the width taken by the line no col to state
+			state.linenooff = maxLen + 1;
+
+			// holds the padding required for the line nos to line up properly
+			char* spacebuf = malloc(sizeof(char)*(diff + 1));
+			char* temp = spacebuf;
+			while (diff){
+				*temp = ' ';
+				temp++;
+				diff--;
+
+			}
+			*temp = '\0';
+			int linelen = snprintf(lineno, sizeof(lineno), "%s\033[1;36m%d\033[0m ", spacebuf, filerow+1);
+			free(spacebuf);
+
+			// appending the line no to be printed
 			appBuffAppend(ab, lineno, linelen);
+
 
 			// appending the text to the append buffer that is used to write to the screen
 			appBuffAppend(ab, &state.row[filerow].render[state.coloff], len);
@@ -627,7 +670,7 @@ void editorDrawMessageBar(struct append_buffer* ab){
 
 // func to clear the screen
 void editorRefreshScreen(){
-	// func to handle vertical scrolling
+	// func to handle scrolling
 	editorScroll();
 
 	// initialize an empty append buffer
@@ -650,6 +693,11 @@ void editorRefreshScreen(){
 	
 	// buffer to store the position of the cursor in a specific format
 	char buffer[32];
+	
+	if(state.cx == 0 && state.rx == 0){
+		state.cx = state.linenooff;
+		state.rx = state.linenooff;
+	}
 
 	// store the position of the cursor in the required format
 	snprintf(buffer, sizeof(buffer), "\x1b[%d;%dH", (state.cy - state.rowoff) + 1, (state.rx - state.coloff) + 1);
@@ -686,28 +734,28 @@ void editorMoveCursor(int key){
 	// switch case to change the global state of the cursor
 	switch(key){
 		case ARROW_LEFT:
-			if(state.cy != 0 && state.cx == 0){
+			if(state.cy != 0 && state.cx == state.linenooff){
 				state.cy--;
-				state.cx = state.row[state.cy].size-1;
-			} else if(state.cx > 0) state.cx--;
+				state.cx = state.row[state.cy].size-1 + state.linenooff; 
+			} else if(state.cx > state.linenooff) state.cx--;
 			break;
 		case ARROW_RIGHT:
-			if(curr_row && state.cx == curr_row->size-1 && state.cy < state.textrows){
+			if(curr_row && state.cx == curr_row->size + state.linenooff){
 				state.cy++;
-				state.cx = 0;
-			} else if(curr_row && state.cx != curr_row->size-1) state.cx++;
+				state.cx = state.linenooff;
+			} else if(curr_row && state.cx < curr_row->size + state.linenooff) state.cx++;
 			break;
 		case ARROW_UP:
 			if(state.cy != 0) state.cy--;
 			break;
 		case ARROW_DOWN:
-			if(state.cy != state.textrows) state.cy++;
+			if(state.cy < state.textrows) state.cy++;
 			break;
 
 	}
 	
-	curr_row = state.cy < state.textrows ? &state.row[state.cy] : NULL;
-	if(curr_row && state.cx > curr_row->size-1) state.cx = curr_row->size-1;
+	erow* row = state.cy < state.textrows ? &state.row[state.cy] : NULL;
+	if(row && state.cx > row->size + state.linenooff) state.cx = row->size + state.linenooff;
 
 }
 
@@ -743,9 +791,12 @@ void editorProcessKeypress(){
 		case CTRL_KEY('s'):
 			editorSave();
 			break;
-
+		
+		// delete a character
 		case BACKSPACE:
 		case CTRL_KEY('h'):
+			if(state.cx > state.linenooff) editorDelChar();
+			break;
 		case DEL_KEY:
 			if(c == DEL_KEY) editorMoveCursor(ARROW_RIGHT);
 			editorDelChar();
@@ -815,6 +866,7 @@ int main(int argc, char *argv[]){
 	
 	// read text from the file if supplied else open an empty editor
 	if(argc >= 2) editorOpen(argv[1]);
+	else editorAppendRow("", 0);
 	
 	// sets the initial status message
 	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit");
