@@ -360,8 +360,6 @@ void editorInsertChar(int c){
 	// if the cursor is on the last line that is of the editor that is blank, then we convert that into a text row 
 	if(state.cy == state.textrows) editorAppendRow("", 0);
 	
-	editorSetStatusMessage("passed cx: %d", state.cx-state.linenooff);
-
 	// call to append the char to the current cursor position
 	editorRowInsertChar(&state.row[state.cy], state.cx-state.linenooff, c);
 
@@ -736,11 +734,11 @@ void editorMoveCursor(int key){
 		case ARROW_LEFT:
 			if(state.cy != 0 && state.cx == state.linenooff){
 				state.cy--;
-				state.cx = state.row[state.cy].size-1 + state.linenooff; 
+				state.cx = state.row[state.cy].size + state.linenooff; 
 			} else if(state.cx > state.linenooff) state.cx--;
 			break;
 		case ARROW_RIGHT:
-			if(curr_row && state.cx == curr_row->size + state.linenooff){
+			if(curr_row && state.cx == curr_row->size + state.linenooff && state.cy < state.textrows-1){
 				state.cy++;
 				state.cx = state.linenooff;
 			} else if(curr_row && state.cx < curr_row->size + state.linenooff) state.cx++;
@@ -749,7 +747,7 @@ void editorMoveCursor(int key){
 			if(state.cy != 0) state.cy--;
 			break;
 		case ARROW_DOWN:
-			if(state.cy < state.textrows) state.cy++;
+			if(state.cy < state.textrows-1) state.cy++;
 			break;
 
 	}
