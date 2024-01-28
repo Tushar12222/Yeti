@@ -106,6 +106,7 @@ void die(const char* s){
 
 // function to restore the original attributes of the terminal on exit
 void disableRawMode(){
+	system("clear");
 	// setting the default attributes back before exiting
 	if(tcsetattr(STDIN_FILENO, TCSAFLUSH, &state.orig) == -1) die("tcsetattr");
 }
