@@ -88,6 +88,8 @@ int calculateDigits(int num){
 /***PROTOTYPE***/
 
 void editorSetStatusMessage(const char *fmt, ...);
+void editorRefreshScreen();
+char *editorPrompt(char* prompt);
 
 /***TERMINAL***/
 
@@ -290,13 +292,16 @@ void editorUpdateRow(erow* row){
 }
 
 // func to append every new line read from the file to the state
-void editorAppendRow(char *s, size_t len){
+void editorInsertRow(int at, char *s, size_t len){
+	//if(at < 0 || at > state.textrows) return;
+	
+	// insert a new row
+	state.row = realloc(state.row, sizeof(erow) * (state.textrows+1));
+	memmove(&state.row[at+1], &state.row[at], sizeof(erow) * (state.textrows - at));
+	
 	// reallocate space to store the new line of text being read
 	state.row = realloc(state.row, sizeof(erow) * (state.textrows + 1));
 	
-	// get the position in the array to where the  new text will be inserted 
-	int at = state.textrows;
-
 	// set the length of the text typed to the state
 	state.row[at].size = len;
 
@@ -390,13 +395,38 @@ void editorRowDelChar(erow* row, int at){
 // func to insert character
 void editorInsertChar(int c){
 	// if the cursor is on the last line that is of the editor that is blank, then we convert that into a text row 
-	if(state.cy == state.textrows) editorAppendRow("", 0);
+	if(state.cy == state.textrows) editorInsertRow(state.textrows, "", 0);
 	
 	// call to append the char to the current cursor position
 	editorRowInsertChar(&state.row[state.cy], state.cx-state.linenooff, c);
 
 	// update the cx cursor position after appending the character
 	state.cx++;
+}
+
+// func to add a new row
+void editorInsertNewLine(){
+	// if the cursor is in the beginning, it adds a new row and shifts the rest of the content
+	if(state.cx == state.linenooff) editorInsertRow(state.cy, "", 0);
+
+	// else shifts part of the text in the current line into a newline
+	else {
+		// get the current row
+		erow* row = &state.row[state.cy];
+
+		// insert a new row after the current row
+		editorInsertRow(state.cy + 1, &row->text[state.cx - state.linenooff], (row->size) - (state.cx - state.linenooff));
+
+		row = &state.row[state.cy];
+		
+		// update the size of the current row
+		row->size = state.cx - state.linenooff;
+		row->text[row->size] = '\0';
+		editorUpdateRow(row);
+	}
+	// update state
+	state.cy++;
+	state.cx = state.linenooff;
 }
 
 // func to delete char
@@ -411,12 +441,12 @@ void editorDelChar(){
 		state.cx--;
 	
 	// remove the current line and append it to the previous line if the cursor is in the beginning of the line
-	} //else {
-	//	state.cx = state.row[state.cy - 1].size + state.linenooff;
-	//	editorRowAppendString(&state.row[state.cy-1], row->text, row->size);
-	//	editorDelRow(state.cy);
-	//	state.cy--;
-	//}
+	} else {
+		state.cx = state.row[state.cy - 1].size + state.linenooff;
+		editorRowAppendString(&state.row[state.cy-1], row->text, row->size);
+		editorDelRow(state.cy);
+		state.cy--;
+	}
 }
 
 
@@ -474,7 +504,7 @@ void editorOpen(char *filename){
 	while((linelen = getline(&line, &linecap, fp)) != -1){
 		// removes the newline character since our struct erow anyways points to a single line always
 		while(linelen > 0  && (line[linelen-1] == '\n' || line[linelen-1] == '\r')) linelen--;
-		editorAppendRow(line , linelen);	
+		editorInsertRow(state.textrows, line , linelen);	
 	}
 	free(line);
 	fclose(fp);
@@ -486,7 +516,15 @@ void editorOpen(char *filename){
 // func to save the string to the file 
 void editorSave(){
 	// todo for new file
-	if(state.filename == NULL) return;
+	if(state.filename == NULL){
+		state.filename = editorPrompt("Save as: %s (ESC to cancel)");
+
+		// if the user pressed escape
+		if(state.filename == NULL){
+			editorSetStatusMessage("Save aborted");
+			return;
+		}
+	}
 
 	// stores the length of the string created
 	int len;
@@ -768,6 +806,56 @@ void editorSetStatusMessage(const char *fmt, ...){
 
 /***INPUT***/
 
+// func to get the filename to save if he opens a blank editor
+char* editorPrompt(char* prompt){
+	// initial buffeer size for the user input
+	size_t bufsize = 128;
+
+	// allocate a buffer to store user input
+	char* buf = malloc(bufsize);
+	size_t buflen = 0;
+	buf[0] = '\0';
+
+	// loop till the user presses enter
+	while(1){
+		// renders the input typed by the user
+		editorSetStatusMessage(prompt, buf);
+
+		// called to repaint each render
+		editorRefreshScreen();
+
+		// reads each key pressed by the user
+		int c = editorReadKey();
+		
+		// if the user presses backspace we delete the previous char
+		if(c == DEL_KEY || c == CTRL_KEY('h') || c == BACKSPACE){
+			if(buflen != 0) buf[--buflen] = '\0';
+
+		// if the user pressed escape we exit the prompt
+		} else if(c == '\x1b'){
+			editorSetStatusMessage("");
+			free(buf);
+			return NULL;
+
+		// if the user presses enter we return the input
+		} else if(c == '\r'){
+			if(buflen != 0){
+				editorSetStatusMessage("");
+				return buf;
+			}
+
+		// in case the buffer size is less, we double it
+		} else if(!iscntrl(c) && c < 128){
+			if(buflen == bufsize - 1){
+				bufsize *= 2;
+				buf = realloc(buf, bufsize);
+			}
+			buf[buflen++] = c;
+			buf[buflen] = '\0';
+		}
+	}
+}
+
 //handles movement of cursor in the editor
 void editorMoveCursor(int key){
 	// handles horizontal movement of the cursor on a line
@@ -806,6 +894,11 @@ void editorProcessKeypress(){
 	int c = editorReadKey();
 
 	switch (c){
+		// enter key
+		case '\r':
+			editorInsertNewLine();
+			break;
+
 		case HOME_KEY:
 		case END_KEY:
 			break;
@@ -912,7 +1005,7 @@ int main(int argc, char *argv[]){
 	
 	// read text from the file if supplied else open an empty editor
 	if(argc >= 2) editorOpen(argv[1]);
-	else editorAppendRow("", 0);
+	else editorInsertRow(state.textrows ,"", 0);
 	
 	// sets the initial status message
 	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit");
