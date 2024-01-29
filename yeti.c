@@ -1103,7 +1103,11 @@ int main(int argc, char *argv[]){
 	// read text from the file if supplied else open an empty editor
 	if(argc >= 2) editorOpen(argv[1]);
 	
-	if(state.textrows == 0) editorInsertRow(state.textrows, "", 0);
+	// if an empty file or no file is opened
+	if(state.textrows == 0){
+		editorInsertRow(state.textrows, "", 0);
+		state.modified--;
+	}
 	
 	// sets the initial status message
 	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = force-quit | Ctrl-A = search");
