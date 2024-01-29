@@ -89,7 +89,7 @@ int calculateDigits(int num){
 
 void editorSetStatusMessage(const char *fmt, ...);
 void editorRefreshScreen();
-char *editorPrompt(char* prompt);
+char *editorPrompt(char* prompt, void (*callback)(char* , int));
 
 /***TERMINAL***/
 
@@ -258,7 +258,7 @@ int getWindowSize(int* rows, int* cols){
 
 /***ROW OPERATIONS***/
 
-// func converst the cx to rx based on the tab spaces present in the line
+// func convert the cx to rx based on the tab spaces present in the line
 int editorRowCxToRx(erow* row, int cx){
 	int rx = 0;
 	for(int j = 0; j < cx; j++){
@@ -267,6 +267,20 @@ int editorRowCxToRx(erow* row, int cx){
 	}
 
 	return rx;
+}
+
+// func to convert rx to cx
+int editorRowRxToCx(erow* row, int rx){
+	int cur_rx = 0;
+	int cx;
+	for(cx = 0; cx < row->size; cx++){
+		if(row->text[cx] == '\t') cur_rx += (YETI_TAB_STOP - 1) - (cur_rx % YETI_TAB_STOP);
+		cur_rx++;
+
+		if(cur_rx > rx) return cx;
+	}
+
+	return cx;
 }
 
 // func that converts tabs to spaces
@@ -517,7 +531,7 @@ void editorOpen(char *filename){
 void editorSave(){
 	// todo for new file
 	if(state.filename == NULL){
-		state.filename = editorPrompt("Save as: %s (ESC to cancel)");
+		state.filename = editorPrompt("Save as: %s (ESC to cancel)", NULL);
 
 		// if the user pressed escape
 		if(state.filename == NULL){
@@ -562,6 +576,80 @@ void editorSave(){
 	
 	// set status message
 	editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
+}
+
+/***FIND***/
+
+void editorFindCallback(char* query, int key){
+	// static variables that maintain the last search positions
+	static int last_match = -1;
+	static int direction = 1;
+	
+	// move the cursor to the next or previous match
+	if(key == '\r' || key == '\x1b'){
+		last_match = -1;
+		direction = 1;
+		return;
+	} else if(key == ARROW_RIGHT || key == ARROW_DOWN) direction = 1;
+
+	else if(key == ARROW_LEFT || key == ARROW_UP) direction = -1;
+	
+	// reset the variables for the next search
+	else{
+		last_match = -1;
+		direction = 1;
+	}
+
+	if(last_match == -1) direction = 1;
+	int current  = last_match;
+
+	// loop to search the query
+	for(int i = 0; i < state.textrows; i++){
+		current += direction;
+		if(current == -1) current = state.textrows - 1;
+		else if(current == state.textrows) current = 0;
+		erow* row = &state.row[current];
+		
+		// checks if the query is a sssubstring of the current row
+		char* match = strstr(row->render, query);
+
+		// if it is a substring
+		if(match) {
+			last_match = current;
+
+			// update the state
+			state.cy = current;
+			state.cx = editorRowRxToCx(row, match - row->render) + state.linenooff;
+			state.rowoff = state.textrows;
+			break;
+		}
+	}
+
+}
+
+// func for searching
+void editorFind(){
+	
+	// save the initial state before searching
+	int saved_cx = state.cx;
+	int saved_cy = state.cy;
+	int saved_coloff = state.coloff;
+	int saved_rowoff = state.rowoff;
+
+	// get the query typed by the user
+	char* query = editorPrompt("Search: %s (ESC to cancel)", editorFindCallback);
+	
+	// free space once the user exits the search
+	if(query) free(query);
+	
+	// when the user exits search mode, we return the cursor to the original position
+	else {
+		state.cx = saved_cx;
+		state.cy = saved_cy;
+		state.coloff = saved_coloff;
+		state.rowoff = saved_rowoff;
+	}
+
 }
 
 /***APPEND BUFFER***/
@@ -714,7 +802,7 @@ void editorDrawStatusBar(struct append_buffer* ab){
 	snprintf(modified, sizeof(modified), "(%d modifications)", state.modified);
 
 	int len = snprintf(status, sizeof(status), "%.20s - %d lines %s", state.filename ? state.filename : "[No Name]", state.textrows, state.modified ? modified : "");
-	int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", state.cy + 1, state.textrows);
+	int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", state.cx - state.linenooff + 1 > 0 ? state.cx - state.linenooff + 1 : 1, state.row[state.cy].size);
 	if(len > state.screencols) len = state.screenrows;
 	appBuffAppend(ab, status, len);
 
@@ -807,7 +895,7 @@ void editorSetStatusMessage(const char *fmt, ...){
 /***INPUT***/
 
 // func to get the filename to save if he opens a blank editor
-char* editorPrompt(char* prompt){
+char* editorPrompt(char* prompt, void (*callback)(char*, int)){
 	// initial buffeer size for the user input
 	size_t bufsize = 128;
 
@@ -834,6 +922,7 @@ char* editorPrompt(char* prompt){
 		// if the user pressed escape we exit the prompt
 		} else if(c == '\x1b'){
 			editorSetStatusMessage("");
+			if(callback) callback(buf, c);
 			free(buf);
 			return NULL;
 
@@ -841,6 +930,7 @@ char* editorPrompt(char* prompt){
 		} else if(c == '\r'){
 			if(buflen != 0){
 				editorSetStatusMessage("");
+				if(callback) callback(buf, c);
 				return buf;
 			}
 
@@ -853,6 +943,8 @@ char* editorPrompt(char* prompt){
 			buf[buflen++] = c;
 			buf[buflen] = '\0';
 		}
+
+		if(callback) callback(buf, c);
 	}
 }
 
@@ -894,6 +986,11 @@ void editorProcessKeypress(){
 	int c = editorReadKey();
 
 	switch (c){
+		// search
+		case CTRL_KEY('a'):
+			editorFind();
+			break;
+
 		// enter key
 		case '\r':
 			editorInsertNewLine();
@@ -1008,7 +1105,7 @@ int main(int argc, char *argv[]){
 	else editorInsertRow(state.textrows ,"", 0);
 	
 	// sets the initial status message
-	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit");
+	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = force-quit | Ctrl-A = search");
 
 	// loop to continuosly capture keystrokes
 	while (1){
