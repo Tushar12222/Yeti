@@ -513,6 +513,9 @@ void editorOpen(char *filename){
 
 	// store the length of the line read
 	ssize_t linelen;
+	
+	// if the file containss no line then we append a line to the editor
+	if((linelen = getline(&line, &linecap, fp)) == -1) editorInsertRow(state.textrows, "", 0);
 
 	// if there is text in that line
 	while((linelen = getline(&line, &linecap, fp)) != -1){
