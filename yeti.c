@@ -514,9 +514,6 @@ void editorOpen(char *filename){
 	// store the length of the line read
 	ssize_t linelen;
 	
-	// if the file containss no line then we append a line to the editor
-	if((linelen = getline(&line, &linecap, fp)) == -1) editorInsertRow(state.textrows, "", 0);
-
 	// if there is text in that line
 	while((linelen = getline(&line, &linecap, fp)) != -1){
 		// removes the newline character since our struct erow anyways points to a single line always
@@ -1105,7 +1102,8 @@ int main(int argc, char *argv[]){
 	
 	// read text from the file if supplied else open an empty editor
 	if(argc >= 2) editorOpen(argv[1]);
-	else editorInsertRow(state.textrows ,"", 0);
+	
+	if(state.textrows == 0) editorInsertRow(state.textrows, "", 0);
 	
 	// sets the initial status message
 	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = force-quit | Ctrl-A = search");
