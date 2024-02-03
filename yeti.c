@@ -89,7 +89,7 @@ int calculateDigits(int num){
 
 void editorSetStatusMessage(const char *fmt, ...);
 void editorRefreshScreen();
-char *editorPrompt(char* prompt, void (*callback)(char* , int));
+char* editorPrompt(char* prompt, void (*callback)(char* , int));
 
 /***TERMINAL***/
 
@@ -578,6 +578,15 @@ void editorSave(){
 	editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
 }
 
+/***QUIT***/
+
+// funcc to tell the terminal to clear the screen and postion the cursor to the top-left
+void editorQuit(){	
+	write(STDOUT_FILENO, "\x1b[2J", 4);
+	write(STDOUT_FILENO, "\x1b[H", 3);
+	exit(0);
+}
+
 /***FIND***/
 
 void editorFindCallback(char* query, int key){
@@ -987,7 +996,7 @@ void editorProcessKeypress(){
 
 	switch (c){
 		// search
-		case CTRL_KEY('a'):
+		case CTRL_KEY('f'):
 			editorFind();
 			break;
 
@@ -1000,23 +1009,27 @@ void editorProcessKeypress(){
 		case END_KEY:
 			break;
 
-		// force quit
-		case CTRL_KEY('f'):
-			write(STDOUT_FILENO, "\x1b[2J", 4);
-			write(STDOUT_FILENO, "\x1b[H", 3);
-			exit(0);
+		// process commands after hitting the esc, semicolon is used as in c it shows a warning if you declare a variable right after the label 
+		case '\x1b': ;
+			// stores the command typed by the user
+			char* command = editorPrompt("COMMAND: %s (ESC = cancel, q = force quit)", NULL);
+			
+			// if the user types a command
+			if(command){
+				// force quits
+				if(command[0] == 'q'){
+					editorQuit();
+				}
+			}
 			break;
 		
 		// quit when changes are saved
 		case CTRL_KEY('q'):
 			if(state.modified){
-				editorSetStatusMessage("Unsaved file changes! Save and quit or use CTRL-F to force quit.");
+				editorSetStatusMessage("Unsaved file changes! Save and quit or use ESC + q to force quit.");
 				return;
 			}
-			// tells the terminal to clear the screen and postion the cursor to the top-left
-			write(STDOUT_FILENO, "\x1b[2J", 4);
-			write(STDOUT_FILENO, "\x1b[H", 3);
-			exit(0);
+			editorQuit();
 			break;
 		
 		// saves changes to the disk
@@ -1043,8 +1056,6 @@ void editorProcessKeypress(){
 			break;
 		
 		case CTRL_KEY('l'):
-		case '\x1b':
-			break;
 
 		// add characters 
 		default:
@@ -1110,7 +1121,7 @@ int main(int argc, char *argv[]){
 	}
 	
 	// sets the initial status message
-	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = force-quit | Ctrl-A = search");
+	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = search | ESC = command mode");
 
 	// loop to continuosly capture keystrokes
 	while (1){
