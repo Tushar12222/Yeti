@@ -1133,7 +1133,7 @@ void editorProcessKeypress(){
 		// process commands after hitting the esc, semicolon is used as in c it shows a warning if you declare a variable right after the label 
 		case '\x1b': ;
 			// stores the command typed by the user
-			char* command = editorPrompt("COMMAND: %s (ESC = cancel, q = force quit)", NULL);
+			char* command = editorPrompt("COMMAND: %s (ESC = cancel | q = force quit | u = undo)", NULL);
 			
 			// if the user types a command
 			if(command){
