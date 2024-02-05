@@ -73,7 +73,91 @@ struct editorConfig{
 // state variables that holds the current state of the editor
 struct editorConfig state;
 
+// stuct to store the previous and next states of the text and also a func to clone the state
+typedef struct undoRedo{
+	struct editorConfig* states; // stores the states from when the file was svaed to disk
+	int size; // stores the total no of states stored
+	int currStateIndex; // stores the index to the current state shown on the editor
+	struct editorConfig* (*clone)(); // funtion pointer that will hold the func to clone the state
+} undoRedo;
+
+// function to clone erow struct
+erow* cloneErow(const erow* src, int num_rows) {
+	erow* dst = (erow*)malloc(num_rows * sizeof(erow));
+    	if (dst == NULL) {
+        	fprintf(stderr, "Memory allocation failed\n");
+        	exit(EXIT_FAILURE);
+    	}
+
+    	for (int i = 0; i < num_rows; i++) {
+        	dst[i].size = src[i].size;
+        	dst[i].rsize = src[i].rsize;
+        	dst[i].text = strdup(src[i].text);
+        	dst[i].render = strdup(src[i].render);
+        	if (dst[i].text == NULL || dst[i].render == NULL) {
+            		fprintf(stderr, "Memory allocation failed\n");
+            		exit(EXIT_FAILURE);
+        	}
+    	}
+	
+    	return dst;
+}
+
+// function to clone the state wwhich is assigned to the undoRedo struct
+struct editorConfig* cloneState(const struct editorConfig* src) {
+    	struct editorConfig* dst = (struct editorConfig*)malloc(sizeof(struct editorConfig));
+    	if (dst == NULL) {
+        	fprintf(stderr, "Memory allocation failed\n");
+        	exit(EXIT_FAILURE);
+    	}
+    
+    	dst->linenooff = src->linenooff;
+    	dst->modified = src->modified;
+    	dst->filename = strdup(src->filename);
+    	dst->cx = src->cx;
+    	dst->cy = src->cy;
+    	dst->rx = src->rx;
+    	dst->rowoff = src->rowoff;
+    	dst->coloff = src->coloff;
+    	dst->screenrows = src->screenrows;
+    	dst->textrows = src->textrows;
+    	dst->row = cloneErow(src->row, src->textrows);
+    	dst->screencols = src->screencols;
+    	strcpy(dst->statusmsg, src->statusmsg);
+    	dst->statusmsg_time = src->statusmsg_time;
+    	memcpy(&dst->orig, &src->orig, sizeof(struct termios));
+    
+    	return dst;
+}
+
+undoRedo ur; // stores the undoRedo information
+
 /***UTILS***/
+
+// func to resixe the undoRedo states i.e to add a state or remove
+void editorResizeUR(int n){
+	struct editorConfig* new_states = realloc(ur.states, sizeof(state) * n);
+	ur.states = new_states;
+}
+
+// adds a state to the undoRedo struct
+void editorAddState(){
+	// the pointer to the cloned state is fetched
+	struct editorConfig* cloned = ur.clone(&state);
+
+	// allocate size to teh undoRedo struct to save the new cloned state
+	struct editorConfig* new_states = realloc(ur.states, sizeof(state) * (ur.size + 1));
+
+	// add the new cloned data to the new pointer with newly allocated space
+	new_states[ur.size] = *cloned;
+
+	// assign teh states pointer back to the new pointer to point to the new memory
+	ur.states = new_states;
+
+	// update the undoRedo strut
+	ur.size += 1;
+	ur.currStateIndex = ur.size - 1;
+}
 
 // func to decide line no col width
 int calculateDigits(int num){
@@ -378,7 +462,7 @@ void editorRowInsertChar(erow* row, int at, int c){
 	state.modified++;
 }
 
-// func to append the line when the use hitss backspace to the previous line ending
+// func to append the line when the use hits backspace to the previous line ending
 void editorRowAppendString(erow* row, char *s, size_t len){
 	//reallocate extra memory to the line to accomodate the next line which was backspaced
 	row->text = realloc(row->text, row->size + len + 1);
@@ -416,6 +500,8 @@ void editorInsertChar(int c){
 
 	// update the cx cursor position after appending the character
 	state.cx++;
+	
+	if(c == ' ' || (state.modified % 3 == 0)) editorAddState();
 }
 
 // func to add a new row
@@ -525,6 +611,7 @@ void editorOpen(char *filename){
 
 	// we reset the moodified state since there was no change made while reading the file
 	state.modified = 0;
+	editorAddState();
 }
 
 // func to save the string to the file 
@@ -565,6 +652,14 @@ void editorSave(){
 
 				// set status meeesage
 				editorSetStatusMessage("%d bytes written to disk", len);
+				
+				// update the states array to hold only thwe current state since the file was saved
+				editorResizeUR(1);
+				ur.size = 0;
+				ur.currStateIndex = 0;
+
+				// add it to the undoRedo state
+				editorAddState();
 				return;
 			}
 		}
@@ -585,6 +680,32 @@ void editorQuit(){
 	write(STDOUT_FILENO, "\x1b[2J", 4);
 	write(STDOUT_FILENO, "\x1b[H", 3);
 	exit(0);
+}
+
+/***UNDO***/
+
+// func to handle the undo feature
+void editorUndoState(){
+	// if the current state is the same as the fiel saaved to disk , we donot undo
+	if(ur.currStateIndex > 0) ur.currStateIndex -= 1;
+	
+	// showws a message if the current state is the same as the file saved to disk
+	if(ur.currStateIndex < 0 || (ur.currStateIndex == 0 && state.modified == 0)){
+		ur.currStateIndex = 0;
+		editorSetStatusMessage("Current file matches with the file on the disk");
+		return;
+	}  
+	
+	// reduce the states stored on every undo
+	if(ur.size != 1) {
+		ur.size -= 1;
+		editorResizeUR(ur.size);
+	}
+	
+	// update the state according to the current undo index
+	state = *ur.clone(&ur.states[ur.currStateIndex]);
+	editorSetStatusMessage("Undo successfull!");
+	editorRefreshScreen();
 }
 
 /***FIND***/
@@ -1019,6 +1140,11 @@ void editorProcessKeypress(){
 				// force quits
 				if(command[0] == 'q'){
 					editorQuit();
+				}	
+
+				// undo
+				if(command[0] == 'u'){
+					editorUndoState();
 				}
 			}
 			break;
@@ -1096,6 +1222,15 @@ void initEditor(){
 	
 	// iniial lineno offset value
 	state.linenooff = 0;
+
+	// initial undo-redo value
+	ur.states = NULL;
+
+	// assign the clone function to the undo-redo variable
+	ur.clone = cloneState;
+	
+	// initial state index in the undo fucntionality
+	ur.currStateIndex = 0;
 
 	// sets the screen size of the editor
 	if(getWindowSize(&state.screenrows,  &state.screencols) == -1) die("getWindowSize");
