@@ -113,7 +113,7 @@ struct editorConfig* cloneState(const struct editorConfig* src) {
     
     	dst->linenooff = src->linenooff;
     	dst->modified = src->modified;
-    	dst->filename = strdup(src->filename);
+    	dst->filename = (src->filename) ? strdup(src->filename) : NULL;
     	dst->cx = src->cx;
     	dst->cy = src->cy;
     	dst->rx = src->rx;
@@ -121,7 +121,7 @@ struct editorConfig* cloneState(const struct editorConfig* src) {
     	dst->coloff = src->coloff;
     	dst->screenrows = src->screenrows;
     	dst->textrows = src->textrows;
-    	dst->row = cloneErow(src->row, src->textrows);
+    	dst->row = (src->row) ? cloneErow(src->row, src->textrows) : NULL;
     	dst->screencols = src->screencols;
     	strcpy(dst->statusmsg, src->statusmsg);
     	dst->statusmsg_time = src->statusmsg_time;
@@ -501,6 +501,7 @@ void editorInsertChar(int c){
 	// update the cx cursor position after appending the character
 	state.cx++;
 	
+	// add the current state to undoRedo only if the use makes more than three cchanges or enters a space 
 	if(c == ' ' || (state.modified % 3 == 0)) editorAddState();
 }
 
@@ -535,18 +536,24 @@ void editorDelChar(){
 	if(state.cx == state.linenooff && state.cy == 0) return;
 
 	erow* row = &state.row[state.cy];
-	// remove a character idf the cursur is not in the beginning of the line
+	// remove a character if the cursor is not in the beginning of the line
 	if(state.cx > state.linenooff){
 		editorRowDelChar(row, state.cx-state.linenooff-1);
 		state.cx--;
 	
 	// remove the current line and append it to the previous line if the cursor is in the beginning of the line
 	} else {
-		state.cx = state.row[state.cy - 1].size + state.linenooff;
 		editorRowAppendString(&state.row[state.cy-1], row->text, row->size);
 		editorDelRow(state.cy);
+
+		// recalculate the line no col width in case it has increased or decreased to properly position the cursor
+		int maxLen = calculateDigits(state.textrows);
+		state.linenooff = maxLen + 1;
+		state.cx = state.row[state.cy-1].size + state.linenooff; 
 		state.cy--;
 	}
+
+	if(state.modified % 3 == 0) editorAddState();
 }
 
 
@@ -992,7 +999,7 @@ void editorRefreshScreen(){
 	// buffer to store the position of the cursor in a specific format
 	char buffer[32];
 	
-	if(state.cx == 0 && state.rx == 0){
+	if(state.cx < state.linenooff && state.rx < state.linenooff){
 		state.cx = state.linenooff;
 		state.rx = state.linenooff;
 	}
@@ -1229,7 +1236,8 @@ void initEditor(){
 	// assign the clone function to the undo-redo variable
 	ur.clone = cloneState;
 	
-	// initial state index in the undo fucntionality
+	// initial state index in the undo functionalitya
+	ur.size = 0;
 	ur.currStateIndex = 0;
 
 	// sets the screen size of the editor
@@ -1253,6 +1261,7 @@ int main(int argc, char *argv[]){
 	if(state.textrows == 0){
 		editorInsertRow(state.textrows, "", 0);
 		state.modified--;
+		editorAddState();
 	}
 	
 	// sets the initial status message
