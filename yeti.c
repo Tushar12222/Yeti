@@ -543,13 +543,14 @@ void editorDelChar(){
 	
 	// remove the current line and append it to the previous line if the cursor is in the beginning of the line
 	} else {
+		int size = state.row[state.cy-1].size;
 		editorRowAppendString(&state.row[state.cy-1], row->text, row->size);
 		editorDelRow(state.cy);
 
 		// recalculate the line no col width in case it has increased or decreased to properly position the cursor
 		int maxLen = calculateDigits(state.textrows);
 		state.linenooff = maxLen + 1;
-		state.cx = state.row[state.cy-1].size + state.linenooff; 
+		state.cx = size + state.linenooff; 
 		state.cy--;
 	}
 
